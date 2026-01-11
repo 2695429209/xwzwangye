@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>小王子：熵 · 视界 (纯净版)</title>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #000; overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+            -webkit-touch-callout: none; /* 禁止iOS长按菜单 */
+            user-select: none; /* 禁止选中文本 */
+            cursor: crosshair; /* 电脑端鼠标样式 */
+        }
+        
+        canvas {
+            display: block;
+            width: 100%; height: 100%;
+            transition: transform 0.5s ease;
+        }
+
+        /* 隐藏的设置面板 */
+        #settings-modal {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(5px);
+            display: none;
+            flex-direction: column; justify-content: center; align-items: center;
+            z-index: 100; opacity: 0; transition: opacity 0.3s;
+        }
+        #settings-modal.active { opacity: 1; }
+
+        .modal-box {
+            width: 80%; max-width: 300px;
+            border: 2px solid #0f0; padding: 20px;
+            text-align: center; box-shadow: 0 0 20px rgba(0,255,0,0.2);
+            color: #0f0;
+        }
+
+        h2 { margin-top: 0; font-size: 16px; letter-spacing: 2px; text-transform: uppercase; }
+        
+        select {
+            width: 100%; background: #002200; color: #0f0;
+            border: 1px solid #0f0; padding: 10px; margin: 20px 0;
+            font-family: inherit; font-size: 14px; outline: none;
+        }
+
+        .btn-close {
+            background: #0f0; color: #000; border: none;
+            padding: 10px 20px; font-weight: bold; cursor: pointer;
+            width: 100%; font-family: inherit;
+        }
+
+        /* 长按反馈动画 */
+        #touch-feedback {
+            position: absolute; width: 80px; height: 80px;
+            border: 2px solid #0f0; border-radius: 50%;
+            transform: translate(-50%, -50%) scale(0);
+            pointer-events: none; z-index: 50; display: none;
+        }
+        @keyframes ripple {
+            0% { transform: translate(-50%, -50%) scale(0.2); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(1.2); opacity: 0; }
+        }
+
+        /* 初始提示，几秒后消失 */
+        #hint {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(0, 255, 0, 0.5); font-size: 14px;
+            pointer-events: none; animation: fadeOut 4s forwards;
+            text-align: center; width: 100%;
+        }
+        @keyframes fadeOut { 0%{opacity:1;} 70%{opacity:1;} 100%{opacity:0;} }
+    </style>
+</head>
+<body>
+
+<video id="video" autoplay playsinline style="display:none;"></video>
+<canvas id="output"></canvas>
+
+<!-- 唯一的提示文字 -->
+<div id="hint">长按屏幕呼出菜单<br>Long Press / Click & Hold</div>
+
+<!-- 长按反馈圈 -->
+<div id="touch-feedback"></div>
+
+<!-- 设置面板 -->
+<div id="settings-modal">
+    <div class="modal-box">
+        <h2>系统设置</h2>
+        <div style="color:#aaa; font-size:12px; margin-bottom:10px;">选择输入源</div>
+        
+        <select id="camera-select" onchange="switchCamera(this.value)">
+            <option value="">加载中...</option>
+        </select>
+
+        <button class="btn-close" onclick="closeSettings()">返回视界</button>
+    </div>
+</div>
+
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('output');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const modal = document.getElementById('settings-modal');
+    const feedback = document.getElementById('touch-feedback');
+    
+    let w, h;
+    let stream = null;
+    let particles = [];
+    const chars = " .:-=+*#%@";
+    let prevFrame = null;
+    
+    // --- 1. 全平台长按逻辑 (鼠标 + 触摸) ---
+    let pressTimer;
+    let isPressing = false;
+
+    // 触摸事件
+    document.addEventListener('touchstart', (e) => handleStart(e.touches[0].clientX, e.touches[0].clientY, e.target));
+    document.addEventListener('touchend', handleEnd);
+    document.addEventListener('touchmove', handleEnd); // 移动手指视为取消
+
+    // 鼠标事件
+    document.addEventListener('mousedown', (e) => handleStart(e.clientX, e.clientY, e.target));
+    document.addEventListener('mouseup', handleEnd);
+    document.addEventListener('mouseleave', handleEnd);
+
+    function handleStart(x, y, target) {
+        // 如果点击的是面板内部，不触发
+        if (target.closest('.modal-box')) return;
+        
+        isPressing = true;
+        showFeedback(x, y);
+
+        // 800毫秒后触发菜单
+        pressTimer = setTimeout(() => {
+            if (isPressing) {
+                openSettings();
+                hideFeedback();
+                isPressing = false;
+            }
+        }, 800);
+    }
+
+    function handleEnd() {
+        isPressing = false;
+        clearTimeout(pressTimer);
+        hideFeedback();
+    }
+
+    function showFeedback(x, y) {
+        feedback.style.left = x + 'px';
+        feedback.style.top = y + 'px';
+        feedback.style.display = 'block';
+        feedback.style.animation = 'ripple 1s infinite';
+    }
+
+    function hideFeedback() {
+        feedback.style.display = 'none';
+        feedback.style.animation = 'none';
+    }
+
+    function openSettings() {
+        modal.style.display = 'flex';
+        setTimeout(() => modal.classList.add('active'), 10);
+        enumerateCameras();
+    }
+
+    function closeSettings() {
+        modal.classList.remove('active');
+        setTimeout(() => modal.style.display = 'none', 300);
+    }
+
+    // --- 2. 摄像头逻辑 ---
+    async function init() {
+        resize();
+        window.addEventListener('resize', resize);
+        try {
+            await startStream();
+            enumerateCameras();
+        } catch (err) {
+            console.error(err);
+        }
+        requestAnimationFrame(loop);
+    }
+
+    async function startStream(deviceId = null) {
+        if (stream) stream.getTracks().forEach(t => t.stop());
+
+        const constraints = {
+            audio: false,
+            video: {
+                deviceId: deviceId ? { exact: deviceId } : undefined,
+                // 默认 720p，不再强制宽高比，让设备自己决定
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+            }
+        };
+
+        try {
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = stream;
+            await video.play();
+
+            // 自动镜像逻辑
+            const track = stream.getVideoTracks()[0];
+            const label = track.label.toLowerCase();
+            const isBack = label.includes('back') || label.includes('rear') || label.includes('environment');
+            canvas.style.transform = isBack ? 'scaleX(1)' : 'scaleX(-1)';
+
+        } catch (err) {
+            console.error(err);
+        }
+    }
+
+    function switchCamera(id) { if(id) startStream(id); }
+
+    async function enumerateCameras() {
+        const select = document.getElementById('camera-select');
+        const currentVal = select.value;
+        select.innerHTML = '';
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+
+        videoDevices.forEach((d, i) => {
+            const opt = document.createElement('option');
+            opt.value = d.deviceId;
+            let label = d.label || `Camera ${i+1}`;
+            if (label.toLowerCase().includes('back')) label = `📸 后置 ${i+1}`;
+            else if (label.toLowerCase().includes('front')) label = `👤 前置 ${i+1}`;
+            opt.text = label;
+            select.appendChild(opt);
+        });
+
+        if (currentVal && Array.from(select.options).some(o => o.value === currentVal)) {
+            select.value = currentVal;
+        }
+    }
+
+    function resize() {
+        w = canvas.width = window.innerWidth;
+        h = canvas.height = window.innerHeight;
+    }
+
+    // --- 3. 渲染核心 (纯净版) ---
+    class GlitchParticle {
+        constructor(x, y, intensity) {
+            this.x = x; this.y = y; this.life = 1.0;
+            this.speedX = (Math.random()-0.5)*2;
+            this.speedY = (Math.random()-0.5)*2;
+            this.color = intensity > 50 
+                ? `255, ${Math.floor(255 - intensity * 2)}, 100` // 强动作：红黄
+                : `0, ${Math.floor(intensity * 5 + 100)}, 255`;  // 弱动作：蓝青
+        }
+        update() { this.x+=this.speedX; this.y+=this.speedY; this.life-=0.05; }
+        draw(ctx) {
+            ctx.fillStyle = `rgba(${this.color}, ${this.life})`;
+            ctx.fillRect(this.x, this.y, 4*this.life, 4*this.life);
+        }
+    }
+
+    function loop() {
+        if (video.readyState !== 4) { requestAnimationFrame(loop); return; }
+
+        const scale = 12; // 矩阵大小
+        const cols = Math.ceil(w / scale);
+        const rows = Math.ceil(h / scale);
+
+        // 离屏渲染
+        const tCanvas = document.createElement('canvas');
+        tCanvas.width = cols; tCanvas.height = rows;
+        const tCtx = tCanvas.getContext('2d');
+        
+        // 拉伸填满，简单暴力
+        tCtx.drawImage(video, 0, 0, cols, rows);
+        const frame = tCtx.getImageData(0, 0, cols, rows).data;
+
+        // 清屏
+        ctx.fillStyle = 'rgba(0,0,0,0.25)'; // 略带残影
+        ctx.fillRect(0, 0, w, h);
+
+        let prev = prevFrame;
+
+        for (let y=0; y<rows; y++) {
+            for (let x=0; x<cols; x++) {
+                const i = (y*cols+x)*4;
+                const r=frame[i], g=frame[i+1], b=frame[i+2];
+                const bright = (r+g+b)/3;
+                
+                let diff = 0;
+                if (prev) diff = Math.abs(r-prev[i]) + Math.abs(g-prev[i+1]) + Math.abs(b-prev[i+2]);
+
+                const sx = x*scale, sy = y*scale;
+
+                if (diff > 25) { // 动态阈值
+                    const charIdx = Math.floor((bright/255)*(chars.length-1));
+                    ctx.font = `bold ${scale}px monospace`;
+                    
+                    // 热成像色
+                    const heat = Math.min(255, diff * 2.5);
+                    ctx.fillStyle = `rgb(255, ${255-heat}, ${255-heat})`;
+                    ctx.fillText(chars[charIdx], sx, sy);
+
+                    // 少量粒子点缀
+                    if (Math.random()<0.05) particles.push(new GlitchParticle(sx, sy, diff));
+                } else {
+                    // 静态背景：极其微弱的绿点
+                    if (bright > 60 && Math.random()>0.97) {
+                        ctx.fillStyle = 'rgba(0, 50, 0, 0.4)';
+                        ctx.font = `${scale}px monospace`;
+                        ctx.fillText('.', sx, sy);
+                    }
+                }
+            }
+        }
+        
+        prevFrame = frame;
+
+        // 更新粒子
+        for (let i=particles.length-1; i>=0; i--) {
+            particles[i].update();
+            particles[i].draw(ctx);
+            if (particles[i].life <= 0) particles.splice(i, 1);
+        }
+
+        requestAnimationFrame(loop);
+    }
+
+    init();
+
+</script>
+</body>
+</html>
