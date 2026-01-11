@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>熵·视界 // 中文版</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace; /* 保持等宽字体以维持科技感 */
+        }
+        canvas {
+            display: block;
+            transform: scaleX(-1); /* 镜像翻转，符合镜子直觉 */
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            box-sizing: border-box;
+            border: 2px solid rgba(0, 255, 128, 0.1);
+            z-index: 10;
+        }
+        
+        /* 修改部分：将位置改为右下角，并设置为右对齐 */
+        #hud-text {
+            position: absolute;
+            bottom: 20px;
+            right: 20px; /* 改为靠右 */
+            text-align: right; /* 文字右对齐 */
+            color: #0f0;
+            font-size: 14px; /* 稍微调大一点字体 */
+            text-shadow: 0 0 5px #0f0;
+            line-height: 1.6;
+            font-weight: bold;
+        }
+
+        .scan-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background: rgba(0, 255, 128, 0.3);
+            animation: scan 3s linear infinite;
+        }
+        @keyframes scan {
+            0% { top: 0%; opacity: 0; }
+            50% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+        #error-msg {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff3333;
+            text-align: center;
+            display: none;
+            font-size: 16px;
+            line-height: 2;
+        }
+        /* 增加一个小装饰：左上角的中文标题 */
+        #title-tag {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: rgba(0, 255, 128, 0.5);
+            font-size: 12px;
+            letter-spacing: 2px;
+        }
+    </style>
+</head>
+<body>
+
+<!-- 视频源（隐藏） -->
+<video id="video" autoplay playsinline style="display:none;"></video>
+<!-- 输出画布 -->
+<canvas id="output"></canvas>
+
+<!-- UI 层 -->
+<div id="ui-layer">
+    <div class="scan-line"></div>
+    <div id="title-tag">小王子：熵 · 视界</div>
+    
+    <!-- 这里是修改后的中文 HUD -->
+    <div id="hud-text">
+        系统状态：<span style="color:#fff">正常运转</span><br>
+        视觉演算模式：<span style="color:#fff">动态熵流解析</span><br>
+        <span id="fps">FPS: 00</span> | 空间扰动值: <span id="delta">0.00</span>
+    </div>
+</div>
+
+<div id="error-msg">
+    ⚠️ 无法连接神经链路<br>
+    请点击屏幕或允许摄像头权限以启动
+</div>
+
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('output');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const fpsSpan = document.getElementById('fps');
+    const deltaSpan = document.getElementById('delta');
+    
+    // 字符集：密度从低到高
+    const chars = " .:-=+*#%@"; 
+    
+    let w, h;
+    let prevFrame = null;
+    let particles = []; // 存储高能粒子
+
+    // 初始化摄像头
+    async function initCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                    facingMode: 'user', // 优先前置摄像头
+                    width: { ideal: 640 }, // 降低分辨率以提高计算性能
+                    height: { ideal: 480 }
+                }
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                resize();
+                requestAnimationFrame(loop);
+            };
+        } catch (err) {
+            document.getElementById('error-msg').style.display = 'block';
+            console.error("Camera access denied:", err);
+        }
+    }
+
+    function resize() {
+        w = canvas.width = window.innerWidth;
+        h = canvas.height = window.innerHeight;
+    }
+
+    window.addEventListener('resize', resize);
+
+    // 粒子类：用于表现“动作留下的痕迹”
+    class GlitchParticle {
+        constructor(x, y, intensity) {
+            this.x = x;
+            this.y = y;
+            this.life = 1.0;
+            this.intensity = intensity; // 动作幅度越大，颜色越亮
+            this.speedY = (Math.random() - 0.5) * 2;
+            this.speedX = (Math.random() - 0.5) * 2;
+            
+            // 颜色基于强度：高强度=红/白，低强度=青/绿
+            if (intensity > 50) {
+                this.color = `255, ${Math.floor(255 - intensity * 2)}, 100`; // 热色
+            } else {
+                this.color = `0, ${Math.floor(intensity * 5 + 100)}, 255`; // 冷色
+            }
+        }
+        update() {
+            this.x += this.speedX;
+            this.y += this.speedY;
+            this.life -= 0.05;
+        }
+        draw(ctx) {
+            ctx.fillStyle = `rgba(${this.color}, ${this.life})`;
+            ctx.fillRect(this.x, this.y, 4 * this.life, 4 * this.life); // 像素块风格
+        }
+    }
+
+    let lastTime = 0;
+
+    function loop(timestamp) {
+        // FPS 计算
+        if (timestamp - lastTime >= 1000) {
+            fpsSpan.innerText = "FPS: " + Math.round(1000 / (timestamp - lastTime) * 60); // 粗略估算
+            lastTime = timestamp;
+        }
+
+        // 1. 绘制视频到底层（不显示，仅用于读取数据）
+        // 保持比例绘制到临时小尺寸以提高性能
+        const scale = 12; // 采样步长，越大越抽象，性能越好
+        const cols = Math.floor(w / scale);
+        const rows = Math.floor(h / scale);
+
+        // 创建离屏画布处理视频帧
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = cols;
+        tempCanvas.height = rows;
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        // 居中裁剪绘制
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const aspect = w / h;
+        const vAspect = vw / vh;
+        let sx, sy, sw, sh;
+
+        if (vAspect > aspect) {
+            sh = vh; sw = vh * aspect; sx = (vw - sw) / 2; sy = 0;
+        } else {
+            sw = vw; sh = vw / aspect; sx = 0; sy = (vh - sh) / 2;
+        }
+        
+        tempCtx.drawImage(video, sx, sy, sw, sh, 0, 0, cols, rows);
+        const frameData = tempCtx.getImageData(0, 0, cols, rows).data;
+
+        // 清空主画布，稍微保留一点黑色背景以制造残影
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.2)'; 
+        ctx.fillRect(0, 0, w, h);
+
+        let totalMotion = 0;
+
+        // 2. 核心算法：对比每一帧的差异
+        for (let y = 0; y < rows; y++) {
+            for (let x = 0; x < cols; x++) {
+                const i = (y * cols + x) * 4;
+                const r = frameData[i];
+                const g = frameData[i + 1];
+                const b = frameData[i + 2];
+                const brightness = (r + g + b) / 3;
+
+                // 计算与上一帧的差异 (Motion Detection)
+                let diff = 0;
+                if (prevFrame) {
+                    const prevR = prevFrame[i];
+                    const prevG = prevFrame[i + 1];
+                    const prevB = prevFrame[i + 2];
+                    diff = Math.abs(r - prevR) + Math.abs(g - prevG) + Math.abs(b - prevB);
+                }
+
+                const screenX = x * scale;
+                const screenY = y * scale;
+
+                // 3. AI 视觉渲染逻辑
+                if (diff > 30) { 
+                    // === 动态区域 (有动作) ===
+                    totalMotion += diff;
+                    
+                    // 只有动作才会触发“高亮显示”
+                    const charIndex = Math.floor((brightness / 255) * (chars.length - 1));
+                    const char = chars[charIndex];
+
+                    ctx.font = `${scale}px monospace`;
+                    // 动得越厉害，颜色越偏向警告色（红/紫），否则是科技蓝
+                    const rCol = Math.min(255, diff * 2);
+                    const gCol = Math.max(0, 255 - diff);
+                    const bCol = 255;
+                    
+                    ctx.fillStyle = `rgb(${rCol}, ${gCol}, ${bCol})`;
+                    ctx.fillText(char, screenX, screenY);
+
+                    // 产生粒子
+                    if (Math.random() < 0.1) {
+                        particles.push(new GlitchParticle(screenX, screenY, diff / 3));
+                    }
+
+                } else {
+                    // === 静态区域 (无动作) ===
+                    // 静态物体在 AI 眼中只是背景噪声，用极暗的矩阵码表示
+                    if (brightness > 50 && Math.random() > 0.8) { // 随机闪烁，节省性能且更有黑客感
+                        ctx.fillStyle = 'rgba(0, 50, 0, 0.3)';
+                        ctx.font = `${scale}px monospace`;
+                        ctx.fillText(Math.random() > 0.5 ? '0' : '1', screenX, screenY);
+                    }
+                }
+            }
+        }
+
+        // 保存当前帧用于下一次对比
+        prevFrame = frameData;
+        deltaSpan.innerText = (totalMotion / 10000).toFixed(2);
+
+        // 4. 更新和绘制粒子
+        for (let i = particles.length - 1; i >= 0; i--) {
+            particles[i].update();
+            particles[i].draw(ctx);
+            if (particles[i].life <= 0) {
+                particles.splice(i, 1);
+            }
+        }
+
+        requestAnimationFrame(loop);
+    }
+
+    // 点击屏幕开始（为了绕过某些浏览器的自动播放策略）
+    document.body.addEventListener('click', () => {
+        if (!video.srcObject) initCamera();
+    });
+    
+    // 自动尝试启动
+    initCamera();
+
+</script>
+</body>
+</html>
